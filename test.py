@@ -9,6 +9,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
+
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -16,24 +17,31 @@ def set_seed(seed=42):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
 
+set_seed(42)
+
 transform = transforms.ToTensor()
+
 train_dataset = datasets.MNIST(
     root="./data",
     train=True,
     download=True,
     transform=transform
 )
+
 test_dataset = datasets.MNIST(
     root="./data",
     train=False,
     download=True,
     transform=transform
 )
+
 train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+
 
 class SimpleCNN(nn.Module):
     def __init__(self):
@@ -59,15 +67,9 @@ class SimpleCNN(nn.Module):
         x = self.features(x)
         x = self.classifier(x)
         return x
-    
-    model = SimpleCNN().to(device)
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    epochs = 3
-    set_seed(42)
 
-    def train(model, loader, criterion, optimizer, device):
+def train(model, loader, criterion, optimizer, device):
     model.train()
 
     for images, labels in loader:
@@ -79,6 +81,7 @@ class SimpleCNN(nn.Module):
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
+
 
 def evaluate(model, loader, device):
     model.eval()
@@ -98,6 +101,12 @@ def evaluate(model, loader, device):
 
     accuracy = 100 * correct / total
     return accuracy
+
+
+model = SimpleCNN().to(device)
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+epochs = 3
 
 for epoch in range(epochs):
     train(model, train_loader, criterion, optimizer, device)
