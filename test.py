@@ -137,7 +137,67 @@ def fgsm_targeted(model, x, target, eps):
     return x_adv.detach()
 
 
-def attack_success_rate_untargeted(model, loader, eps, max_samples=100):
+def pgd_untargeted(model, x, label, eps, eps_step, k):
+    x_orig = x.clone().detach().to(device)
+    label = label.to(device)
+    x_adv = x_orig.clone().detach()
+
+    for _ in range(k):
+        x_adv.requires_grad_(True)
+
+        outputs = model(x_adv)
+        loss = nn.CrossEntropyLoss()(outputs, label)
+
+        model.zero_grad()
+        loss.backward()
+
+        with torch.no_grad():
+            x_adv = x_adv + eps_step * x_adv.grad.sign()
+
+            # 원본 이미지 기준 eps-ball 안으로 projection
+            x_adv = torch.max(torch.min(x_adv, x_orig + eps), x_orig - eps)
+
+            # 이미지 범위 [0, 1] 유지
+            x_adv = torch.clamp(x_adv, 0, 1)
+
+        x_adv = x_adv.detach()
+
+    return x_adv
+
+
+def pgd_targeted(model, x, target, eps, eps_step, k):
+    x_orig = x.clone().detach().to(device)
+    target = target.to(device)
+    x_adv = x_orig.clone().detach()
+
+    for _ in range(k):
+        x_adv.requires_grad_(True)
+
+        outputs = model(x_adv)
+        loss = nn.CrossEntropyLoss()(outputs, target)
+
+        model.zero_grad()
+        loss.backward()
+
+        with torch.no_grad():
+            x_adv = x_adv - eps_step * x_adv.grad.sign()
+
+            # 원본 이미지 기준 eps-ball 안으로 projection
+            x_adv = torch.max(torch.min(x_adv, x_orig + eps), x_orig - eps)
+
+            # 이미지 범위 [0, 1] 유지
+            x_adv = torch.clamp(x_adv, 0, 1)
+
+        x_adv = x_adv.detach()
+
+    return x_adv
+
+
+def make_target_labels(labels):
+    return (labels + 1) % 10
+
+
+def attack_success_rate_untargeted_fgsm(model, loader, eps, max_samples=100):
     model.eval()
     success = 0
     total = 0
@@ -145,6 +205,13 @@ def attack_success_rate_untargeted(model, loader, eps, max_samples=100):
     for images, labels in loader:
         images = images.to(device)
         labels = labels.to(device)
+
+        remaining = max_samples - total
+        if remaining <= 0:
+            break
+
+        images = images[:remaining]
+        labels = labels[:remaining]
 
         x_adv = fgsm_untargeted(model, images, labels, eps)
 
@@ -155,19 +222,10 @@ def attack_success_rate_untargeted(model, loader, eps, max_samples=100):
         success += (preds_adv != labels).sum().item()
         total += labels.size(0)
 
-        if total >= max_samples:
-            break
-
-    total = min(total, max_samples)
-    rate = 100 * success / total
-    return rate
+    return 100 * success / total
 
 
-def make_target_labels(labels):
-    return (labels + 1) % 10
-
-
-def attack_success_rate_targeted(model, loader, eps, max_samples=100):
+def attack_success_rate_targeted_fgsm(model, loader, eps, max_samples=100):
     model.eval()
     success = 0
     total = 0
@@ -175,6 +233,13 @@ def attack_success_rate_targeted(model, loader, eps, max_samples=100):
     for images, labels in loader:
         images = images.to(device)
         labels = labels.to(device)
+
+        remaining = max_samples - total
+        if remaining <= 0:
+            break
+
+        images = images[:remaining]
+        labels = labels[:remaining]
         targets = make_target_labels(labels)
 
         x_adv = fgsm_targeted(model, images, targets, eps)
@@ -186,12 +251,64 @@ def attack_success_rate_targeted(model, loader, eps, max_samples=100):
         success += (preds_adv == targets).sum().item()
         total += labels.size(0)
 
-        if total >= max_samples:
+    return 100 * success / total
+
+
+def attack_success_rate_untargeted_pgd(model, loader, eps, eps_step, k, max_samples=100):
+    model.eval()
+    success = 0
+    total = 0
+
+    for images, labels in loader:
+        images = images.to(device)
+        labels = labels.to(device)
+
+        remaining = max_samples - total
+        if remaining <= 0:
             break
 
-    total = min(total, max_samples)
-    rate = 100 * success / total
-    return rate
+        images = images[:remaining]
+        labels = labels[:remaining]
+
+        x_adv = pgd_untargeted(model, images, labels, eps, eps_step, k)
+
+        with torch.no_grad():
+            outputs_adv = model(x_adv)
+            preds_adv = outputs_adv.argmax(dim=1)
+
+        success += (preds_adv != labels).sum().item()
+        total += labels.size(0)
+
+    return 100 * success / total
+
+
+def attack_success_rate_targeted_pgd(model, loader, eps, eps_step, k, max_samples=100):
+    model.eval()
+    success = 0
+    total = 0
+
+    for images, labels in loader:
+        images = images.to(device)
+        labels = labels.to(device)
+
+        remaining = max_samples - total
+        if remaining <= 0:
+            break
+
+        images = images[:remaining]
+        labels = labels[:remaining]
+        targets = make_target_labels(labels)
+
+        x_adv = pgd_targeted(model, images, targets, eps, eps_step, k)
+
+        with torch.no_grad():
+            outputs_adv = model(x_adv)
+            preds_adv = outputs_adv.argmax(dim=1)
+
+        success += (preds_adv == targets).sum().item()
+        total += labels.size(0)
+
+    return 100 * success / total
 
 
 model = SimpleCNN().to(device)
@@ -204,10 +321,22 @@ for epoch in range(epochs):
     acc = evaluate(model, test_loader, device)
     print(f"Epoch {epoch+1}/{epochs}, Test Accuracy: {acc:.2f}%")
 
+
 eps = 0.1
+eps_step = 0.01
+k = 10
 
-untargeted_rate = attack_success_rate_untargeted(model, test_loader, eps, max_samples=100)
-targeted_rate = attack_success_rate_targeted(model, test_loader, eps, max_samples=100)
+untargeted_fgsm_rate = attack_success_rate_untargeted_fgsm(model, test_loader, eps, max_samples=100)
+targeted_fgsm_rate = attack_success_rate_targeted_fgsm(model, test_loader, eps, max_samples=100)
 
-print(f"Untargeted FGSM Success Rate (eps={eps}): {untargeted_rate:.2f}%")
-print(f"Targeted FGSM Success Rate (eps={eps}): {targeted_rate:.2f}%")
+untargeted_pgd_rate = attack_success_rate_untargeted_pgd(
+    model, test_loader, eps, eps_step, k, max_samples=100
+)
+targeted_pgd_rate = attack_success_rate_targeted_pgd(
+    model, test_loader, eps, eps_step, k, max_samples=100
+)
+
+print(f"Untargeted FGSM Success Rate (eps={eps}): {untargeted_fgsm_rate:.2f}%")
+print(f"Targeted FGSM Success Rate (eps={eps}): {targeted_fgsm_rate:.2f}%")
+print(f"Untargeted PGD Success Rate (eps={eps}, step={eps_step}, k={k}): {untargeted_pgd_rate:.2f}%")
+print(f"Targeted PGD Success Rate (eps={eps}, step={eps_step}, k={k}): {targeted_pgd_rate:.2f}%")
