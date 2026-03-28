@@ -103,6 +103,23 @@ def evaluate(model, loader, device):
     return accuracy
 
 
+def fgsm_untargeted(model, x, label, eps):
+    x_adv = x.clone().detach().to(device)
+    label = label.to(device)
+    x_adv.requires_grad_(True)
+
+    outputs = model(x_adv)
+    loss = nn.CrossEntropyLoss()(outputs, label)
+
+    model.zero_grad()
+    loss.backward()
+
+    x_adv = x_adv + eps * x_adv.grad.sign()
+    x_adv = torch.clamp(x_adv, 0, 1)
+
+    return x_adv.detach()
+
+
 model = SimpleCNN().to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
