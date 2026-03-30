@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
+from torchvision import datasets, transforms, models
 
 
 def set_seed(seed=42):
@@ -24,24 +24,55 @@ print("Using device:", device)
 set_seed(42)
 os.makedirs("results", exist_ok=True)
 
-transform = transforms.ToTensor()
 
-train_dataset = datasets.MNIST(
-    root="./data",
-    train=True,
-    download=True,
-    transform=transform
-)
+def get_mnist_loaders(batch_size=64):
+    transform = transforms.ToTensor()
 
-test_dataset = datasets.MNIST(
-    root="./data",
-    train=False,
-    download=True,
-    transform=transform
-)
+    train_dataset = datasets.MNIST(
+        root="./data",
+        train=True,
+        download=True,
+        transform=transform
+    )
 
-train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    test_dataset = datasets.MNIST(
+        root="./data",
+        train=False,
+        download=True,
+        transform=transform
+    )
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    return train_loader, test_loader
+
+
+def get_cifar10_loaders(batch_size=128):
+    train_transform = transforms.Compose([
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomCrop(32, padding=4),
+        transforms.ToTensor(),
+    ])
+
+    test_transform = transforms.ToTensor()
+
+    train_dataset = datasets.CIFAR10(
+        root="./data",
+        train=True,
+        download=True,
+        transform=train_transform
+    )
+
+    test_dataset = datasets.CIFAR10(
+        root="./data",
+        train=False,
+        download=True,
+        transform=test_transform
+    )
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    return train_loader, test_loader
 
 
 class SimpleCNN(nn.Module):
@@ -68,6 +99,14 @@ class SimpleCNN(nn.Module):
         x = self.features(x)
         x = self.classifier(x)
         return x
+
+
+# CIFAR-10용 ResNet18
+def get_cifar10_model():
+    model = models.resnet18(weights=None, num_classes=10)
+    model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+    model.maxpool = nn.Identity()
+    return model
 
 
 def train(model, loader, criterion, optimizer, device):
@@ -100,10 +139,10 @@ def evaluate(model, loader, device):
             correct += (preds == labels).sum().item()
             total += labels.size(0)
 
-    accuracy = 100 * correct / total
-    return accuracy
+    return 100 * correct / total
 
 
+# 정답에서 멀어지도록 perturbation 추가
 def fgsm_untargeted(model, x, label, eps):
     x_adv = x.clone().detach().to(device)
     label = label.to(device)
@@ -121,6 +160,7 @@ def fgsm_untargeted(model, x, label, eps):
     return x_adv.detach()
 
 
+# 목표 클래스로 가도록 반대 방향으로 이동
 def fgsm_targeted(model, x, target, eps):
     x_adv = x.clone().detach().to(device)
     target = target.to(device)
@@ -138,6 +178,7 @@ def fgsm_targeted(model, x, target, eps):
     return x_adv.detach()
 
 
+# 작은 step으로 여러 번 공격하고 매번 eps 범위 안으로 되돌림
 def pgd_untargeted(model, x, label, eps, eps_step, k):
     x_orig = x.clone().detach().to(device)
     label = label.to(device)
@@ -186,8 +227,9 @@ def pgd_targeted(model, x, target, eps, eps_step, k):
     return x_adv
 
 
-def make_target_labels(labels):
-    return (labels + 1) % 10
+# 간단하게 다음 숫자를 target으로 사용
+def make_target_labels(labels, num_classes=10):
+    return (labels + 1) % num_classes
 
 
 def attack_success_rate_untargeted_fgsm(model, loader, eps, max_samples=100):
@@ -209,8 +251,7 @@ def attack_success_rate_untargeted_fgsm(model, loader, eps, max_samples=100):
         x_adv = fgsm_untargeted(model, images, labels, eps)
 
         with torch.no_grad():
-            outputs_adv = model(x_adv)
-            preds_adv = outputs_adv.argmax(dim=1)
+            preds_adv = model(x_adv).argmax(dim=1)
 
         success += (preds_adv != labels).sum().item()
         total += labels.size(0)
@@ -238,8 +279,7 @@ def attack_success_rate_targeted_fgsm(model, loader, eps, max_samples=100):
         x_adv = fgsm_targeted(model, images, targets, eps)
 
         with torch.no_grad():
-            outputs_adv = model(x_adv)
-            preds_adv = outputs_adv.argmax(dim=1)
+            preds_adv = model(x_adv).argmax(dim=1)
 
         success += (preds_adv == targets).sum().item()
         total += labels.size(0)
@@ -266,8 +306,7 @@ def attack_success_rate_untargeted_pgd(model, loader, eps, eps_step, k, max_samp
         x_adv = pgd_untargeted(model, images, labels, eps, eps_step, k)
 
         with torch.no_grad():
-            outputs_adv = model(x_adv)
-            preds_adv = outputs_adv.argmax(dim=1)
+            preds_adv = model(x_adv).argmax(dim=1)
 
         success += (preds_adv != labels).sum().item()
         total += labels.size(0)
@@ -295,8 +334,7 @@ def attack_success_rate_targeted_pgd(model, loader, eps, eps_step, k, max_sample
         x_adv = pgd_targeted(model, images, targets, eps, eps_step, k)
 
         with torch.no_grad():
-            outputs_adv = model(x_adv)
-            preds_adv = outputs_adv.argmax(dim=1)
+            preds_adv = model(x_adv).argmax(dim=1)
 
         success += (preds_adv == targets).sum().item()
         total += labels.size(0)
@@ -304,7 +342,16 @@ def attack_success_rate_targeted_pgd(model, loader, eps, eps_step, k, max_sample
     return 100 * success / total
 
 
-def save_visualizations(model, loader, attack_fn, attack_name, eps, num_samples=5, eps_step=None, k=None):
+def tensor_to_image(tensor):
+    x = tensor.detach().cpu()
+    if x.dim() == 3:
+        x = x.permute(1, 2, 0).numpy()
+    else:
+        x = x.squeeze().numpy()
+    return x
+
+
+def save_visualizations(model, loader, attack_fn, attack_type, file_prefix, eps, num_samples=5, eps_step=None, k=None):
     model.eval()
     saved = 0
 
@@ -313,89 +360,140 @@ def save_visualizations(model, loader, attack_fn, attack_name, eps, num_samples=
         labels = labels.to(device)
 
         with torch.no_grad():
-            clean_outputs = model(images)
-            clean_preds = clean_outputs.argmax(dim=1)
+            clean_preds = model(images).argmax(dim=1)
 
-        if attack_name in ["fgsm_targeted", "pgd_targeted"]:
+        if attack_type == "fgsm_targeted":
             targets = make_target_labels(labels)
-            if attack_name == "fgsm_targeted":
-                adv_images = attack_fn(model, images, targets, eps)
-            else:
-                adv_images = attack_fn(model, images, targets, eps, eps_step, k)
+            adv_images = attack_fn(model, images, targets, eps)
+
+        elif attack_type == "pgd_targeted":
+            targets = make_target_labels(labels)
+            adv_images = attack_fn(model, images, targets, eps, eps_step, k)
+
+        elif attack_type == "fgsm_untargeted":
+            adv_images = attack_fn(model, images, labels, eps)
+
+        elif attack_type == "pgd_untargeted":
+            adv_images = attack_fn(model, images, labels, eps, eps_step, k)
+
         else:
-            if attack_name == "fgsm_untargeted":
-                adv_images = attack_fn(model, images, labels, eps)
-            else:
-                adv_images = attack_fn(model, images, labels, eps, eps_step, k)
+            raise ValueError(f"Unknown attack_type: {attack_type}")
 
         with torch.no_grad():
-            adv_outputs = model(adv_images)
-            adv_preds = adv_outputs.argmax(dim=1)
+            adv_preds = model(adv_images).argmax(dim=1)
 
         for i in range(images.size(0)):
             if saved >= num_samples:
                 return
 
-            original = images[i].detach().cpu().squeeze().numpy()
-            adversarial = adv_images[i].detach().cpu().squeeze().numpy()
+            original = tensor_to_image(images[i])
+            adversarial = tensor_to_image(adv_images[i])
             perturbation = adversarial - original
 
             fig, axes = plt.subplots(1, 3, figsize=(9, 3))
 
-            axes[0].imshow(original, cmap="gray")
+            if original.ndim == 2:
+                axes[0].imshow(original, cmap="gray")
+                axes[1].imshow(adversarial, cmap="gray")
+                axes[2].imshow(perturbation, cmap="gray")
+            else:
+                axes[0].imshow(np.clip(original, 0, 1))
+                axes[1].imshow(np.clip(adversarial, 0, 1))
+                p = perturbation
+                p = (p - p.min()) / (p.max() - p.min() + 1e-8)
+                axes[2].imshow(p)
+
             axes[0].set_title(f"Original\nPred: {clean_preds[i].item()}")
-            axes[0].axis("off")
-
-            axes[1].imshow(adversarial, cmap="gray")
             axes[1].set_title(f"Adversarial\nPred: {adv_preds[i].item()}")
-            axes[1].axis("off")
-
-            axes[2].imshow(perturbation, cmap="gray")
             axes[2].set_title("Perturbation")
-            axes[2].axis("off")
+
+            for ax in axes:
+                ax.axis("off")
 
             plt.tight_layout()
-            save_path = f"results/{attack_name}_{saved+1}.png"
-            plt.savefig(save_path)
+            plt.savefig(f"results/{file_prefix}_{saved+1}.png")
             plt.close(fig)
 
             saved += 1
 
 
-model = SimpleCNN().to(device)
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-epochs = 3
+def run_attack_table(model, loader, dataset_name, eps_list, k=10, max_samples=100):
+    print(f"\n=== Attack Success Rates on {dataset_name} ===")
+    print("eps\tFGSM-U\tFGSM-T\tPGD-U\tPGD-T")
 
-for epoch in range(epochs):
-    train(model, train_loader, criterion, optimizer, device)
-    acc = evaluate(model, test_loader, device)
-    print(f"Epoch {epoch+1}/{epochs}, Test Accuracy: {acc:.2f}%")
+    for eps in eps_list:
+        eps_step = eps / 10
+
+        fgsm_u = attack_success_rate_untargeted_fgsm(model, loader, eps, max_samples=max_samples)
+        fgsm_t = attack_success_rate_targeted_fgsm(model, loader, eps, max_samples=max_samples)
+        pgd_u = attack_success_rate_untargeted_pgd(model, loader, eps, eps_step, k, max_samples=max_samples)
+        pgd_t = attack_success_rate_targeted_pgd(model, loader, eps, eps_step, k, max_samples=max_samples)
+
+        print(f"{eps:.2f}\t{fgsm_u:.2f}%\t{fgsm_t:.2f}%\t{pgd_u:.2f}%\t{pgd_t:.2f}%")
+
+
+# ---------------- MNIST ----------------
+mnist_train_loader, mnist_test_loader = get_mnist_loaders()
+
+mnist_model = SimpleCNN().to(device)
+mnist_criterion = nn.CrossEntropyLoss()
+mnist_optimizer = optim.Adam(mnist_model.parameters(), lr=0.001)
+mnist_epochs = 3
+mnist_ckpt = "mnist_model.pth"
+
+if os.path.exists(mnist_ckpt):
+    mnist_model.load_state_dict(torch.load(mnist_ckpt, map_location=device))
+    mnist_acc = evaluate(mnist_model, mnist_test_loader, device)
+    print(f"\nLoaded MNIST model, Test Accuracy: {mnist_acc:.2f}%")
+else:
+    print("\nTraining MNIST model...")
+    for epoch in range(mnist_epochs):
+        train(mnist_model, mnist_train_loader, mnist_criterion, mnist_optimizer, device)
+        acc = evaluate(mnist_model, mnist_test_loader, device)
+        print(f"MNIST Epoch {epoch+1}/{mnist_epochs}, Test Accuracy: {acc:.2f}%")
+    torch.save(mnist_model.state_dict(), mnist_ckpt)
 
 eps_list = [0.05, 0.1, 0.2, 0.3]
-k = 10
+run_attack_table(mnist_model, mnist_test_loader, "MNIST", eps_list, k=10, max_samples=100)
 
-print("\n=== Attack Success Rates on MNIST ===")
-print("eps\tFGSM-U\tFGSM-T\tPGD-U\tPGD-T")
-
-for eps in eps_list:
-    eps_step = eps / 10
-
-    fgsm_u = attack_success_rate_untargeted_fgsm(model, test_loader, eps, max_samples=100)
-    fgsm_t = attack_success_rate_targeted_fgsm(model, test_loader, eps, max_samples=100)
-    pgd_u = attack_success_rate_untargeted_pgd(model, test_loader, eps, eps_step, k, max_samples=100)
-    pgd_t = attack_success_rate_targeted_pgd(model, test_loader, eps, eps_step, k, max_samples=100)
-
-    print(f"{eps:.2f}\t{fgsm_u:.2f}%\t{fgsm_t:.2f}%\t{pgd_u:.2f}%\t{pgd_t:.2f}%")
-
-# 시각화 저장용 eps 설정
 vis_eps = 0.3
 vis_eps_step = vis_eps / 10
 vis_k = 10
 
-save_visualizations(model, test_loader, fgsm_untargeted, "fgsm_untargeted", vis_eps, num_samples=5)
-save_visualizations(model, test_loader, fgsm_targeted, "fgsm_targeted", vis_eps, num_samples=5)
-save_visualizations(model, test_loader, pgd_untargeted, "pgd_untargeted", vis_eps, num_samples=5, eps_step=vis_eps_step, k=vis_k)
-save_visualizations(model, test_loader, pgd_targeted, "pgd_targeted", vis_eps, num_samples=5, eps_step=vis_eps_step, k=vis_k)
+save_visualizations(mnist_model, mnist_test_loader, fgsm_untargeted, "fgsm_untargeted", "mnist_fgsm_untargeted", vis_eps, num_samples=5)
+save_visualizations(mnist_model, mnist_test_loader, fgsm_targeted, "fgsm_targeted", "mnist_fgsm_targeted", vis_eps, num_samples=5)
+save_visualizations(mnist_model, mnist_test_loader, pgd_untargeted, "pgd_untargeted", "mnist_pgd_untargeted", vis_eps, num_samples=5, eps_step=vis_eps_step, k=vis_k)
+save_visualizations(mnist_model, mnist_test_loader, pgd_targeted, "pgd_targeted", "mnist_pgd_targeted", vis_eps, num_samples=5, eps_step=vis_eps_step, k=vis_k)
 
-print("\nSaved visualization images to results/")
+print("Saved MNIST visualization images to results/")
+
+
+# ---------------- CIFAR-10 ----------------
+cifar_train_loader, cifar_test_loader = get_cifar10_loaders()
+
+cifar_model = get_cifar10_model().to(device)
+cifar_criterion = nn.CrossEntropyLoss()
+cifar_optimizer = optim.Adam(cifar_model.parameters(), lr=0.001)
+cifar_epochs = 10
+cifar_ckpt = "cifar10_model.pth"
+
+if os.path.exists(cifar_ckpt):
+    cifar_model.load_state_dict(torch.load(cifar_ckpt, map_location=device))
+    cifar_acc = evaluate(cifar_model, cifar_test_loader, device)
+    print(f"\nLoaded CIFAR-10 model, Test Accuracy: {cifar_acc:.2f}%")
+else:
+    print("\nTraining CIFAR-10 model...")
+    for epoch in range(cifar_epochs):
+        train(cifar_model, cifar_train_loader, cifar_criterion, cifar_optimizer, device)
+        acc = evaluate(cifar_model, cifar_test_loader, device)
+        print(f"CIFAR-10 Epoch {epoch+1}/{cifar_epochs}, Test Accuracy: {acc:.2f}%")
+    torch.save(cifar_model.state_dict(), cifar_ckpt)
+
+run_attack_table(cifar_model, cifar_test_loader, "CIFAR-10", eps_list, k=10, max_samples=100)
+
+save_visualizations(cifar_model, cifar_test_loader, fgsm_untargeted, "fgsm_untargeted", "cifar10_fgsm_untargeted", vis_eps, num_samples=5)
+save_visualizations(cifar_model, cifar_test_loader, fgsm_targeted, "fgsm_targeted", "cifar10_fgsm_targeted", vis_eps, num_samples=5)
+save_visualizations(cifar_model, cifar_test_loader, pgd_untargeted, "pgd_untargeted", "cifar10_pgd_untargeted", vis_eps, num_samples=5, eps_step=vis_eps_step, k=vis_k)
+save_visualizations(cifar_model, cifar_test_loader, pgd_targeted, "pgd_targeted", "cifar10_pgd_targeted", vis_eps, num_samples=5, eps_step=vis_eps_step, k=vis_k)
+
+print("Saved CIFAR-10 visualization images to results/")
