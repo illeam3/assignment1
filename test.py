@@ -153,11 +153,7 @@ def pgd_untargeted(model, x, label, eps, eps_step, k):
 
         with torch.no_grad():
             x_adv = x_adv + eps_step * x_adv.grad.sign()
-
-            # 원본 이미지 기준 eps-ball 안으로 projection
             x_adv = torch.max(torch.min(x_adv, x_orig + eps), x_orig - eps)
-
-            # 이미지 범위 [0, 1] 유지
             x_adv = torch.clamp(x_adv, 0, 1)
 
         x_adv = x_adv.detach()
@@ -181,11 +177,7 @@ def pgd_targeted(model, x, target, eps, eps_step, k):
 
         with torch.no_grad():
             x_adv = x_adv - eps_step * x_adv.grad.sign()
-
-            # 원본 이미지 기준 eps-ball 안으로 projection
             x_adv = torch.max(torch.min(x_adv, x_orig + eps), x_orig - eps)
-
-            # 이미지 범위 [0, 1] 유지
             x_adv = torch.clamp(x_adv, 0, 1)
 
         x_adv = x_adv.detach()
@@ -322,21 +314,18 @@ for epoch in range(epochs):
     print(f"Epoch {epoch+1}/{epochs}, Test Accuracy: {acc:.2f}%")
 
 
-eps = 0.1
-eps_step = 0.01
+eps_list = [0.05, 0.1, 0.2, 0.3]
 k = 10
 
-untargeted_fgsm_rate = attack_success_rate_untargeted_fgsm(model, test_loader, eps, max_samples=100)
-targeted_fgsm_rate = attack_success_rate_targeted_fgsm(model, test_loader, eps, max_samples=100)
+print("\n=== Attack Success Rates on MNIST ===")
+print("eps\tFGSM-U\tFGSM-T\tPGD-U\tPGD-T")
 
-untargeted_pgd_rate = attack_success_rate_untargeted_pgd(
-    model, test_loader, eps, eps_step, k, max_samples=100
-)
-targeted_pgd_rate = attack_success_rate_targeted_pgd(
-    model, test_loader, eps, eps_step, k, max_samples=100
-)
+for eps in eps_list:
+    eps_step = eps / 10
 
-print(f"Untargeted FGSM Success Rate (eps={eps}): {untargeted_fgsm_rate:.2f}%")
-print(f"Targeted FGSM Success Rate (eps={eps}): {targeted_fgsm_rate:.2f}%")
-print(f"Untargeted PGD Success Rate (eps={eps}, step={eps_step}, k={k}): {untargeted_pgd_rate:.2f}%")
-print(f"Targeted PGD Success Rate (eps={eps}, step={eps_step}, k={k}): {targeted_pgd_rate:.2f}%")
+    fgsm_u = attack_success_rate_untargeted_fgsm(model, test_loader, eps, max_samples=100)
+    fgsm_t = attack_success_rate_targeted_fgsm(model, test_loader, eps, max_samples=100)
+    pgd_u = attack_success_rate_untargeted_pgd(model, test_loader, eps, eps_step, k, max_samples=100)
+    pgd_t = attack_success_rate_targeted_pgd(model, test_loader, eps, eps_step, k, max_samples=100)
+
+    print(f"{eps:.2f}\t{fgsm_u:.2f}%\t{fgsm_t:.2f}%\t{pgd_u:.2f}%\t{pgd_t:.2f}%")
