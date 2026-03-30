@@ -22,6 +22,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
 
 set_seed(42)
+os.makedirs("results", exist_ok=True)
 
 transform = transforms.ToTensor()
 
@@ -303,6 +304,64 @@ def attack_success_rate_targeted_pgd(model, loader, eps, eps_step, k, max_sample
     return 100 * success / total
 
 
+def save_visualizations(model, loader, attack_fn, attack_name, eps, num_samples=5, eps_step=None, k=None):
+    model.eval()
+    saved = 0
+
+    for images, labels in loader:
+        images = images.to(device)
+        labels = labels.to(device)
+
+        with torch.no_grad():
+            clean_outputs = model(images)
+            clean_preds = clean_outputs.argmax(dim=1)
+
+        if attack_name in ["fgsm_targeted", "pgd_targeted"]:
+            targets = make_target_labels(labels)
+            if attack_name == "fgsm_targeted":
+                adv_images = attack_fn(model, images, targets, eps)
+            else:
+                adv_images = attack_fn(model, images, targets, eps, eps_step, k)
+        else:
+            if attack_name == "fgsm_untargeted":
+                adv_images = attack_fn(model, images, labels, eps)
+            else:
+                adv_images = attack_fn(model, images, labels, eps, eps_step, k)
+
+        with torch.no_grad():
+            adv_outputs = model(adv_images)
+            adv_preds = adv_outputs.argmax(dim=1)
+
+        for i in range(images.size(0)):
+            if saved >= num_samples:
+                return
+
+            original = images[i].detach().cpu().squeeze().numpy()
+            adversarial = adv_images[i].detach().cpu().squeeze().numpy()
+            perturbation = adversarial - original
+
+            fig, axes = plt.subplots(1, 3, figsize=(9, 3))
+
+            axes[0].imshow(original, cmap="gray")
+            axes[0].set_title(f"Original\nPred: {clean_preds[i].item()}")
+            axes[0].axis("off")
+
+            axes[1].imshow(adversarial, cmap="gray")
+            axes[1].set_title(f"Adversarial\nPred: {adv_preds[i].item()}")
+            axes[1].axis("off")
+
+            axes[2].imshow(perturbation, cmap="gray")
+            axes[2].set_title("Perturbation")
+            axes[2].axis("off")
+
+            plt.tight_layout()
+            save_path = f"results/{attack_name}_{saved+1}.png"
+            plt.savefig(save_path)
+            plt.close(fig)
+
+            saved += 1
+
+
 model = SimpleCNN().to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -312,7 +371,6 @@ for epoch in range(epochs):
     train(model, train_loader, criterion, optimizer, device)
     acc = evaluate(model, test_loader, device)
     print(f"Epoch {epoch+1}/{epochs}, Test Accuracy: {acc:.2f}%")
-
 
 eps_list = [0.05, 0.1, 0.2, 0.3]
 k = 10
@@ -329,3 +387,15 @@ for eps in eps_list:
     pgd_t = attack_success_rate_targeted_pgd(model, test_loader, eps, eps_step, k, max_samples=100)
 
     print(f"{eps:.2f}\t{fgsm_u:.2f}%\t{fgsm_t:.2f}%\t{pgd_u:.2f}%\t{pgd_t:.2f}%")
+
+# 시각화 저장용 eps 설정
+vis_eps = 0.3
+vis_eps_step = vis_eps / 10
+vis_k = 10
+
+save_visualizations(model, test_loader, fgsm_untargeted, "fgsm_untargeted", vis_eps, num_samples=5)
+save_visualizations(model, test_loader, fgsm_targeted, "fgsm_targeted", vis_eps, num_samples=5)
+save_visualizations(model, test_loader, pgd_untargeted, "pgd_untargeted", vis_eps, num_samples=5, eps_step=vis_eps_step, k=vis_k)
+save_visualizations(model, test_loader, pgd_targeted, "pgd_targeted", vis_eps, num_samples=5, eps_step=vis_eps_step, k=vis_k)
+
+print("\nSaved visualization images to results/")
